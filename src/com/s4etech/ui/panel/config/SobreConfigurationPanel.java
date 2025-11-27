@@ -14,7 +14,7 @@ public class SobreConfigurationPanel extends javax.swing.JPanel {
         jLabel8 = new javax.swing.JLabel();
         jLabel1 = new javax.swing.JLabel();
         jLabel7.setText("S4E Tech - Viewer");
-        jLabel8.setText("Versão: 2.1.1");
+        jLabel8.setText("Versão: 2.1.2");
 
         javax.swing.GroupLayout jPanel1Layout = new javax.swing.GroupLayout(jPanel1);
         jPanel1.setLayout(jPanel1Layout);

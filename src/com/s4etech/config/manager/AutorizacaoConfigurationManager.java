@@ -67,6 +67,8 @@ public class AutorizacaoConfigurationManager {
             // Tenta descriptografar
             conteudoDescriptografado = CryptoUtils.decrypt(contentArquivo);
 
+           // System.out.println(CryptoUtils.decrypt("VdTs3MIbJ0gisOYBUzAJ25i6UdfWw48P32siiSVztenwPBLcF2We0mLjq4M1/a6qkCs7jGYN6AjgOAC8lYNF+AfpKD0CCEPiVIJV1m9oeT0="));
+            
             // Verificação simples: se o resultado for nulo ou ilegível, pode não estar criptografado
             if (conteudoDescriptografado == null || conteudoDescriptografado.trim().isEmpty()) {
                 throw new IllegalArgumentException("Arquivo não parece estar criptografado.");

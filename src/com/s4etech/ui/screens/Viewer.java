@@ -52,7 +52,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
@@ -63,8 +62,6 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Consumer;
-import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.zip.CRC32;
@@ -90,7 +87,6 @@ import javax.swing.JPopupMenu;
 import javax.swing.JRadioButtonMenuItem;
 import javax.swing.JScrollPane;
 import javax.swing.JSeparator;
-import javax.swing.JTextField;
 import javax.swing.JWindow;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
@@ -117,14 +113,12 @@ import org.freedesktop.gstreamer.PadProbeReturn;
 import org.freedesktop.gstreamer.PadProbeType;
 import org.freedesktop.gstreamer.Pipeline;
 import org.freedesktop.gstreamer.State;
-import org.freedesktop.gstreamer.event.EOSEvent;
 import org.onvif.ver10.schema.Profile;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
-import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.s4etech.config.manager.AutorizacaoConfigurationManager;
@@ -1861,6 +1855,7 @@ public class Viewer implements Serializable {
 	    inicializaGridFree();
 	}
 
+	/*
 	private void diagnosticarThreadsEMemoria(String momento) {
 		System.gc();
 		try {
@@ -1876,6 +1871,7 @@ public class Viewer implements Serializable {
 		Thread.getAllStackTraces().keySet().stream().map(t -> t.getName() + " [" + t.getState() + "]").sorted()
 				.forEach(System.out::println);
 	}
+	*/
 
 	private void resetAllButtons() {
 		SwingUtilities.invokeLater(() -> {
@@ -2143,6 +2139,7 @@ public class Viewer implements Serializable {
 		JOptionPane.showMessageDialog(null, mensagem, titulo, JOptionPane.ERROR_MESSAGE);
 	}
 
+	/*
 	private void logMemoryAndMapStates(String contexto) {
 
 		System.gc(); // Força coleta de lixo
@@ -2176,6 +2173,7 @@ public class Viewer implements Serializable {
 		logger.info("mapaVNCFrames: {}", mapaVNCFrames.size());
 		logger.info("mapaOnvifDevice: {}", mapaOnvifDevice.size());
 	}
+	*/
 
 	public static String getMemoryUsageString() {
 		Runtime runtime = Runtime.getRuntime();
@@ -3002,181 +3000,78 @@ public class Viewer implements Serializable {
 	}
 
 	private void setupBusErrorHandling(CameraDTO camera) {
-	    final String camKey = camera.getCodigo();
+		// 🔹 Verifica se o pipeline existe
+		Pipeline pipeline = mapaPipeline.get(camera.getCodigo());
+		if (pipeline == null) {
+			logger.error("Pipeline não encontrado ao tentar configurar Bus para câmera {}", camera.getCodigo());
+			return;
+		}
 
-	    synchronized (lock) {
-	        Pipeline pipeline = mapaPipeline.get(camKey);
-	        if (pipeline == null) {
-	            logger.error("Pipeline não encontrado ao configurar Bus para a câmera {}", camKey);
-	            return;
-	        }
+		// 🔹 Recupera o Bus do pipeline
+		Bus bus = pipeline.getBus();
+		if (bus == null) {
+			logger.error("Bus não encontrado para a câmera {}, tentativa abortada", camera.getCodigo());
+			return;
+		}
 
-	        Bus bus;
-	        try {
-	            bus = pipeline.getBus();
-	        } catch (Exception e) {
-	            logger.error("Falha ao obter Bus para a câmera {}: {}", camKey, e.getMessage(), e);
-	            return;
-	        }
-	        if (bus == null) {
-	            logger.error("Bus é nulo para a câmera {}, abortando configuração", camKey);
-	            return;
-	        }
+		// 🔹 Conecta o erro do Bus para capturar falhas
+		Bus.ERROR errorHandler = new Bus.ERROR() {
+			public void errorMessage(GstObject source, int code, String message) {
+				synchronized (lock) {
+					Timer oldTimer = mapaReconnectTimers.remove(camera.getCodigo());
+					if (oldTimer != null)
+						oldTimer.stop();
 
-	        // Desconecta ERROR handler anterior (se houver) para evitar duplicidade
-	        Bus.ERROR prevErrorHandler = mapaBusErrorHandlers.remove(camKey);
-	        if (prevErrorHandler != null) {
-	            try { bus.disconnect(prevErrorHandler); } catch (Exception ignore) {}
-	        }
+					Pipeline oldPipeline = mapaPipeline.remove(camera.getCodigo());
+					Bus oldBus = oldPipeline.getBus();
 
-	        final Bus.ERROR errorHandler = new Bus.ERROR() {
-	            @Override
-	            public void errorMessage(GstObject source, int code, String message) {
-	                try { // <- BLINDA TUDO
-	                    synchronized (lock) {
-	                        logger.warn("Erro no Bus da câmera {} (code={}): {}", camKey, code, message);
+					Bus.STATE_CHANGED stateHandler = new Bus.STATE_CHANGED() {
+						public void stateChanged(GstObject source, State old, State newState, State pending) {
+							if (newState == State.NULL) {
+								oldPipeline.dispose();
+							}
+						}
+					};
 
-	                        // Evita reentrância: se já tem teardown/reconnect em curso, sai
-	                        if (!beginReconnect(camKey)) {
-	                            return;
-	                        }
-	                        try {
-	                            // Para e remove timer antigo
-	                            javax.swing.Timer oldTimer = mapaReconnectTimers.remove(camKey);
-	                            if (oldTimer != null) {
-	                                try { oldTimer.stop(); } catch (Exception ignore) {}
-	                            }
+					if (oldBus != null) {
+						oldBus.connect(stateHandler);
+						mapaBusStateHandlers.put(camera.getCodigo(), stateHandler);
+					} else {
+						oldPipeline.dispose();
+					}
 
-	                            // Captura pipeline atual; se já não existe, só agenda reconexão
-	                            Pipeline oldPipeline = mapaPipeline.get(camKey);
-	                            if (oldPipeline == null) {
-	                                safeAlert(camKey, camera.getIp());
-	                                scheduleReconnectBackoff(camKey, camera); // backoff
-	                                return;
-	                            }
+					oldPipeline.setState(State.NULL);
 
-	                            // Remove do mapa para impedir reuso enquanto finalizamos
-	                            mapaPipeline.remove(camKey);
+					// 🔁 Limpa dados antigos antes de criar novo pipeline
+					mapaPad.remove(camera.getCodigo());
+					mapaFps.remove(camera.getCodigo());
+					mapaFrameCount.remove(camera.getCodigo());
+					mapaStartTime.remove(camera.getCodigo());
+					mapaLastPacketTime.remove(camera.getCodigo());
+					mapaLatenciaPacote.remove(camera.getCodigo());
+					mapaLatenciasPacote.remove(camera.getCodigo());
 
-	                            // Desconecta handlers antigos do BUS desse pipeline
-	                            Bus oldBus = null;
-	                            try { oldBus = oldPipeline.getBus(); } catch (Exception ignore) {}
-	                            Bus.STATE_CHANGED prevStateHandler = mapaBusStateHandlers.remove(camKey);
-	                            if (oldBus != null && prevStateHandler != null) {
-	                                try { oldBus.disconnect(prevStateHandler); } catch (Exception ignore) {}
-	                            }
-	                            Bus.ERROR prevErr = mapaBusErrorHandlers.remove(camKey);
-	                            if (oldBus != null && prevErr != null) {
-	                                try { oldBus.disconnect(prevErr); } catch (Exception ignore) {}
-	                            }
+					Pipeline newPipeline = new Pipeline();
+					mapaPipeline.put(camera.getCodigo(), newPipeline);
 
-	                            // Conecta um STATE_CHANGED para dar dispose quando atingir NULL
-	                            Bus.STATE_CHANGED stateHandler = new Bus.STATE_CHANGED() {
-	                                @Override
-	                                public void stateChanged(GstObject src, State old, State newState, State pending) {
-	                                    if (newState == State.NULL) {
-	                                        try { oldPipeline.dispose(); } catch (Exception ignore) {}
-	                                    }
-	                                }
-	                            };
-	                            if (oldBus != null) {
-	                                try {
-	                                    oldBus.connect(stateHandler);
-	                                    mapaBusStateHandlers.put(camKey, stateHandler);
-	                                } catch (Exception e) {
-	                                    logger.debug("Falha ao conectar STATE_CHANGED em oldBus {}: {}", camKey, e.getMessage());
-	                                }
-	                            }
+					AlertDisplay.displayAlert(mapaInternalFrame.get(camera.getCodigo()), camera.getCodigo(),
+							camera.getIp());
 
-	                            // Tenta transitar para NULL; se der erro, faz dispose direto
-	                            try {
-	                                oldPipeline.setState(State.NULL);
-	                            } catch (Throwable t) {
-	                                try { oldPipeline.dispose(); } catch (Exception ignore) {}
-	                            }
+					Timer newTimer = new Timer(6000, e -> {
+						new Thread(() -> handleReconnection(camera)).start();
+					});
+					newTimer.setRepeats(true);
+					newTimer.start();
 
-	                            // Limpa métricas/estruturas auxiliares
-	                            mapaPad.remove(camKey);
-	                            mapaFps.remove(camKey);
-	                            mapaFrameCount.remove(camKey);
-	                            mapaStartTime.remove(camKey);
-	                            mapaLastPacketTime.remove(camKey);
-	                            mapaLatenciaPacote.remove(camKey);
-	                            mapaLatenciasPacote.remove(camKey);
+					mapaReconnectTimers.put(camera.getCodigo(), newTimer);
+				}
+			}
+		};
 
-	                            // Alerta (safe) e agenda reconexão com backoff
-	                            safeAlert(camKey, camera.getIp());
-	                            scheduleReconnectBackoff(camKey, camera);
+		bus.connect(errorHandler);
+		mapaBusErrorHandlers.put(camera.getCodigo(), errorHandler);
 
-	                        } finally {
-	                            endReconnect(camKey);
-	                        }
-	                    }
-	                } catch (Throwable t) {
-	                    // NADA sai daqui
-	                    logger.error("Falha no errorHandler {}: {}", camKey, t.toString(), t);
-	                }
-	            }
-
-	            private void safeAlert(String camKey, String ip) {
-	                try {
-	                    var frame = mapaInternalFrame.get(camKey);
-	                    if (frame != null) {
-	                        AlertDisplay.displayAlert(frame, camKey, ip);
-	                    }
-	                } catch (Throwable ignore) {}
-	            }
-	        };
-
-	        try {
-	            bus.connect(errorHandler);
-	            mapaBusErrorHandlers.put(camKey, errorHandler);
-	        } catch (Exception e) {
-	            logger.error("Falha ao conectar errorHandler no Bus da câmera {}: {}", camKey, e.getMessage(), e);
-	        }
-	    }
 	}
-
-	private boolean beginReconnect(String key) {
-	    reconnecting.putIfAbsent(key, new java.util.concurrent.atomic.AtomicBoolean(false));
-	    return reconnecting.get(key).compareAndSet(false, true);
-	}
-	private void endReconnect(String key) {
-	    var f = reconnecting.get(key);
-	    if (f != null) f.set(false);
-	}
-	
-	private void scheduleReconnectBackoff(String camKey, CameraDTO camera) {
-	    long now = System.currentTimeMillis();
-	    int attempt = retryAttempts.getOrDefault(camKey, 0);
-	    long delay = Math.min(MAX_DELAY_MS, (long)(BASE_DELAY_MS * Math.pow(2, attempt)));
-	    long when  = Math.max(now + delay, nextRetryAt.getOrDefault(camKey, 0L));
-
-	    nextRetryAt.put(camKey, when);
-	    retryAttempts.put(camKey, attempt + 1);
-
-	    int ms = (int)Math.max(0, when - now);
-	    javax.swing.Timer t = new javax.swing.Timer(ms, e -> {
-	        // rode sua rotina num executor (ideal) ou numa thread
-	        new Thread(() -> {
-	            try {
-	                handleReconnection(camera);
-	                // se reconectar OK, zera backoff
-	                retryAttempts.remove(camKey);
-	                nextRetryAt.remove(camKey);
-	            } catch (Throwable ex) {
-	                // mantém contadores para próximo backoff
-	                logger.warn("handleReconnection falhou em {}: {}", camKey, ex.toString());
-	            }
-	        }).start();
-	    });
-	    t.setRepeats(false);
-	    // substitui timer antigo, se houver
-	    javax.swing.Timer old = mapaReconnectTimers.put(camKey, t);
-	    if (old != null) try { old.stop(); } catch (Exception ignore) {}
-	    t.start();
-	}
-
 
 	private void handleReconnection(CameraDTO camera) {
 		// 🔹 Verifica se já há uma tentativa de reconexão ativa
@@ -3402,6 +3297,7 @@ public class Viewer implements Serializable {
 
 	}
 
+	/*
 	private void exibirAvisoMonitorAusente(String cameraCodigo, ConfiguracaoVisualDTO configuracao) {
 		String mensagem = String
 				.format("A posição configurada para a câmera '%s' não está dentro da área visível dos monitores.%n"
@@ -3414,6 +3310,7 @@ public class Viewer implements Serializable {
 		SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(null, mensagem, "Aviso: Monitor Ausente",
 				JOptionPane.WARNING_MESSAGE));
 	}
+	*/
 
 	private void configurarJanela(CameraDTO camera) {
 
@@ -3486,106 +3383,6 @@ public class Viewer implements Serializable {
 			}
 		}
 		return null;
-	}
-
-	private void limparGridFree() {
-		logger.info("Desativando o modo Grid Free...");
-
-		if (mapaCameras == null || mapaCameras.isEmpty()) {
-			return;
-		}
-
-		// Remove componentes do LayeredPane
-		for (Component comp : layeredPane.getComponents()) {
-			if (layeredPane.getLayer(comp) == JLayeredPane.PALETTE_LAYER) {
-
-				// Remove listeners explicitamente
-				for (ComponentListener listener : comp.getComponentListeners()) {
-					comp.removeComponentListener(listener);
-				}
-				for (MouseListener listener : comp.getMouseListeners()) {
-					comp.removeMouseListener(listener);
-				}
-				for (MouseMotionListener listener : comp.getMouseMotionListeners()) {
-					comp.removeMouseMotionListener(listener);
-				}
-				for (KeyListener listener : comp.getKeyListeners()) {
-					comp.removeKeyListener(listener);
-				}
-
-				if (comp instanceof JInternalFrame) {
-					JInternalFrame frame = (JInternalFrame) comp;
-
-					if (!mapaWebViewFrames.containsValue(frame) && !mapaVNCFrames.containsValue(frame)) {
-						layeredPane.remove(frame); // Primeiro remove
-						frame.dispose(); // Depois libera recursos
-					}
-
-				} else {
-					layeredPane.remove(comp);
-				}
-			}
-		}
-
-		// Remove e libera recursos associados às câmeras
-		for (String codigo : mapaCameras.keySet()) {
-
-			// Finaliza e remove pipeline
-			Pipeline pipeline = mapaPipeline.get(codigo);
-			if (pipeline != null) {
-				logger.info("Parando e liberando pipeline da câmera {}", codigo);
-
-				pipeline.setState(State.NULL);
-
-				// Aguarda até 5 segundos para confirmar a parada
-				try {
-					pipeline.getState(5, TimeUnit.SECONDS);
-				} catch (Exception e) {
-					logger.warn("Timeout ao aguardar pipeline NULL para câmera {}", codigo);
-				}
-
-				pipeline.dispose();
-				mapaPipeline.remove(codigo);
-			}
-
-			// Remove componentes de vídeo
-			JPanel panel = mapaVideoPanel.get(codigo);
-			if (panel != null) {
-				for (Component child : panel.getComponents()) {
-					if (child instanceof GstVideoComponent) {
-						panel.remove(child); // Remove explicitamente o componente GStreamer
-					}
-				}
-				panel.removeAll(); // Garante que todos os filhos saiam
-				mapaVideoPanel.remove(codigo);
-			}
-
-			// Remove frame da câmera
-			try {
-				JInternalFrame frame = mapaInternalFrame.get(codigo);
-				if (frame != null) {
-					layeredPane.remove(frame);
-					frame.dispose();
-				}
-				mapaInternalFrame.remove(codigo);
-			} catch (Exception e) {
-				logger.warn("Erro ao remover frame da câmera {}", codigo, e);
-			}
-		}
-
-		// Limpa os mapas
-		mapaPipeline.clear();
-		mapaFps.clear();
-		mapaLatenciaPacote.clear();
-		mapaCameras.clear();
-
-		// Atualiza a interface apenas uma vez
-		SwingUtilities.invokeLater(() -> {
-			layeredPane.revalidate();
-			layeredPane.repaint();
-		});
-
-		logger.info("Grid Free desativado.");
 	}
 
 	private JPanel createButtonPanel(String name) {
@@ -4001,43 +3798,6 @@ public class Viewer implements Serializable {
 			logger.error(camera.getCodigo() + " Na tentativa de conexão...", ex);
 		}
 
-	}
-
-	private void disposeInternalFrames() {
-	    if (mapaInternalFrame != null) {
-	        for (JInternalFrame frame : mapaInternalFrame.values()) {
-	            if (frame != null && frame.isDisplayable()) {
-	                try {
-	                    if (SwingUtilities.isEventDispatchThread()) {
-	                        frame.dispose();
-	                    } else {
-	                        SwingUtilities.invokeAndWait(frame::dispose);
-	                    }
-	                } catch (Exception e) {
-	                    logger.warn("Erro ao descartar JInternalFrame", e);
-	                }
-	            }
-	        }
-	        mapaInternalFrame.clear();
-	    }
-	}
-
-	private void shutdownTimersAndThreads() {
-		if (animationThread != null && animationThread.isAlive()) {
-			animationThread.interrupt();
-			animationThread = null;
-		}
-		if (mapaReconnectTimers != null && !mapaReconnectTimers.isEmpty()) {
-			for (String codigo : mapaReconnectTimers.keySet()) {
-				Timer timer = mapaReconnectTimers.get(codigo);
-				if (timer != null) {
-					timer.stop();
-					mapaReconnectTimers.put(codigo, timer);
-				}
-			}
-			mapaReconnectTimers.clear(); // Remove todos os timers do mapa
-		}
-		logger.info("Timers e threads encerrados.");
 	}
 
 	private void cleanupPipelines() {
@@ -4581,19 +4341,6 @@ public class Viewer implements Serializable {
 	    int valor() { return valor; }
 	}
 
-	// Traduz sua lógica atual de status (inclui null-safe)
-	private CameraEstado obterEstado(Pipeline pipeline, String cameraCode) {
-	    String s = getStatusPorCamera(pipeline, cameraCode); // "00","01","10","11"
-	    if (s == null) return CameraEstado.ERRO;
-	    return switch (s) {
-	        case "01" -> CameraEstado.ATIVA;
-	        case "00" -> CameraEstado.CONFIGURADA_INATIVA;
-	        case "11" -> CameraEstado.ERRO;
-	        default    -> CameraEstado.NAO_CONFIGURADA;
-	    };
-	}
-
-
 	public void imprimirStatusDasCameras(byte[] data) {
 		for (int i = 0; i < 16; i++) {
 			int bitPosition = i * 2;
@@ -4954,23 +4701,6 @@ public class Viewer implements Serializable {
 
 	    return cenarios;
 	}
-
-
-
-	/** Compatibilidade: retorna o primeiro ativo (0..6). Se nenhum, retorna 0 (allCams). */
-	private int obterIndiceCenarioAtivo0Based(Map<String, Boolean> scenarioFixed) {
-	    if (Boolean.TRUE.equals(scenarioFixed.get("allCams"))) return 0;
-
-	    int idx = 1;
-	    for (Map.Entry<String, Boolean> e : scenarioFixed.entrySet()) {
-	        if ("allCams".equalsIgnoreCase(e.getKey())) continue;
-	        if (Boolean.TRUE.equals(e.getValue())) return idx;
-	        idx++;
-	        if (idx >= TOTAL_CENARIOS) break;
-	    }
-	    return 0;
-	}
-
 	
 	private void startCommunicationUDP() {
 
@@ -5212,19 +4942,6 @@ public class Viewer implements Serializable {
 		}
 
 		return statusPorCamera;
-	}
-
-	private int obterStatusCenario() {
-
-	    int i = 1; // começa em 1 para já bater com sua regra
-	    for (Map.Entry<String, Boolean> e : scenarioFixed.entrySet()) {
-	        if (Boolean.TRUE.equals(e.getValue())) {
-	            return i; // achou, retorna 1,2,3...
-	        }
-	        i++;
-	    }
-
-	    return 0; // se não achou nenhum
 	}
 
 	private void handleUdpMessage(String mensagem) {
