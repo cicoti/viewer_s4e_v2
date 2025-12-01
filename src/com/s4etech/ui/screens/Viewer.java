@@ -3058,7 +3058,7 @@ public class Viewer implements Serializable {
 							camera.getIp());
 
 					Timer newTimer = new Timer(6000, e -> {
-						new Thread(() -> handleReconnection(camera)).start();
+						new Thread(() -> recreateCameraPipelineResize(camera)).start();
 					});
 					newTimer.setRepeats(true);
 					newTimer.start();
@@ -3073,6 +3073,7 @@ public class Viewer implements Serializable {
 
 	}
 
+	/*
 	private void handleReconnection(CameraDTO camera) {
 		// 🔹 Verifica se já há uma tentativa de reconexão ativa
 		if (mapaIsReconnecting.getOrDefault(camera.getCodigo(), false)) {
@@ -3275,6 +3276,7 @@ public class Viewer implements Serializable {
 			}
 		});
 	}
+	*/
 
 	private void reconnectToErrorBus(CameraDTO camera) {
 
