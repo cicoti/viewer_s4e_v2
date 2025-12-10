@@ -1693,6 +1693,9 @@ public class Viewer implements Serializable {
 	            Thread.currentThread().interrupt();
 	        }
 	        gravacaoExecutor = null;
+	        
+	        this.limparGravacao();
+	        
 	        logger.info("gravacaoExecutor encerrado.");
 	    }
 	    
