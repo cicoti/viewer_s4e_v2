@@ -1,7 +1,7 @@
 ; Script atualizado para remover JAVA_HOME e manter dependências adicionais corretamente
 
 #define MyAppName "S4ETech-Viewer"
-#define MyAppVersion "2.1.3"
+#define MyAppVersion "2.1.4"
 #define MyAppPublisher "s4etech"
 #define MyAppURL "https://www.s4e.tech/br/"
 
@@ -16,7 +16,7 @@ AppUpdatesURL={#MyAppURL}
 DefaultDirName=C:\{#MyAppName}
 DefaultGroupName={#MyAppName}
 OutputDir=C:\Users\silvi\OneDrive\Desktop
-OutputBaseFilename=s4etech-viewer-instalador-213
+OutputBaseFilename=s4etech-viewer-instalador-214
 SetupIconFile=C:\projetos\ctech\executavel\s4e-viewer\icos4e.ico
 Compression=lzma
 SolidCompression=yes
